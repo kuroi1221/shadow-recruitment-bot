@@ -1,17 +1,6 @@
 {
-  "recruiters": {
-    "433358725558960129": {
-      "verified": 0,
-      "pending": 1,
-      "left": 0
-    }
-  },
-  "pending": {
-    "1460809105785491578": {
-      "recruiterId": "433358725558960129",
-      "joinedAt": 1780261274566
-    }
-  },
+  "recruiters": {},
+  "pending": {},
   "verified": {},
   "left": {}
 }
