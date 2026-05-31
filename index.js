@@ -967,7 +967,9 @@ const channel =
         if (i === 2) medal = '🥉';
 
         description +=
-            `${medal} ${displayName} — ${stats.verified} recruits\n`;
+            description +=
+    `${medal} ${displayName}\n` +
+    `✅ ${stats.verified} Verified | ⏳ ${stats.pending} Pending | ❌ ${stats.left} Lost\n\n`;
 
     }
 
