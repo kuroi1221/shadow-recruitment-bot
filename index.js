@@ -22,9 +22,6 @@ const client = new Client({
 // CONFIG
 // =====================================
 
-// Recruitment leaderboard channel
-const CHANNEL_ID = '1128422743575101540';
-
 // Auto leaderboard update interval
 const UPDATE_INTERVAL =
     6 * 60 * 60 * 1000;
@@ -71,6 +68,20 @@ if (fs.existsSync('./leaderboard.json')) {
 }
 
 // =====================================
+// SETTINGS
+// =====================================
+
+let settings = {};
+
+if (fs.existsSync('./settings.json')) {
+
+    settings = JSON.parse(
+        fs.readFileSync('./settings.json')
+    );
+
+}
+
+// =====================================
 // SAVE DATABASE
 // =====================================
 
@@ -83,6 +94,14 @@ function saveData() {
 
 }
 
+function saveSettings() {
+
+    fs.writeFileSync(
+        './settings.json',
+        JSON.stringify(settings, null, 2)
+    );
+
+}
 // =====================================
 // READY
 // =====================================
@@ -123,9 +142,9 @@ client.once('ready', async () => {
     startLeaderboardUpdates();
 
     setInterval(
-        verifyRecruits,
-        60 * 60 * 1000
-    );
+    verifyRecruits,
+    60 * 60 * 1000
+);
 
 });
 
@@ -223,9 +242,11 @@ client.on('guildMemberAdd', async member => {
 
     saveData();
 
-    console.log(
-        `${member.user.tag} joined using ${usedInvite.code}`
-    );
+await updateLeaderboard(guild);
+
+console.log(
+    `${member.user.tag} joined using ${usedInvite.code}`
+);
 
 });
 
@@ -299,10 +320,12 @@ async function verifyRecruits() {
             // Remove pending
             delete data.pending[userId];
 
-            saveData();
+saveData();
 
-            console.log(
-                `${userId} verified after 3 days`
+await updateLeaderboard(guild);
+
+console.log(
+    `${userId} verified after 3 days`
             );
 
         }
@@ -344,13 +367,15 @@ async member => {
 
         }
 
-        delete data.verified[
-            member.user.id
-        ];
+delete data.verified[
+    member.user.id
+];
 
-        saveData();
+saveData();
 
-    }
+await updateLeaderboard(member.guild);
+
+}
 
     // PENDING leaves
     const pendingRecruiter =
@@ -378,7 +403,9 @@ async member => {
             member.user.id
         ];
 
-        saveData();
+saveData();
+
+await updateLeaderboard(member.guild);
 
     }
 
@@ -392,6 +419,34 @@ client.on('messageCreate',
 async message => {
 
     if (message.author.bot) return;
+
+// =====================================
+// SET LEADERBOARD CHANNEL
+// =====================================
+
+if (
+    message.content ===
+    '!Ssetleaderboard'
+) {
+
+    settings[
+        message.guild.id
+    ] = {
+
+        leaderboardChannel:
+            message.channel.id
+
+    };
+
+    saveSettings();
+
+    return message.reply(
+
+        `✅ Leaderboard channel set to <#${message.channel.id}>`
+
+    );
+
+}
 
     // =====================================
     // PROFILE
@@ -861,10 +916,24 @@ Show command list`
 
 async function updateLeaderboard(guild) {
 
-    const channel =
-        guild.channels.cache.get(
-            CHANNEL_ID
-        );
+const channelId =
+    settings[guild.id]
+        ?.leaderboardChannel;
+
+if (!channelId) {
+
+    console.log(
+        `No leaderboard channel set for ${guild.name}`
+    );
+
+    return;
+
+}
+
+const channel =
+    guild.channels.cache.get(
+        channelId
+    );
 
     if (!channel) return;
 
