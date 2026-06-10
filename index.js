@@ -946,12 +946,21 @@ const channel =
 
     if (!channel) return;
 
-    const sorted =
-        Object.entries(data.recruiters)
-        .sort((a, b) =>
-            b[1].verified -
-            a[1].verified
-        );
+const sorted =
+    Object.entries(data.recruiters)
+    .sort((a, b) => {
+
+        const aTotal =
+            a[1].verified +
+            a[1].pending;
+
+        const bTotal =
+            b[1].verified +
+            b[1].pending;
+
+        return bTotal - aTotal;
+
+    });
 
     let description = '';
 
@@ -975,12 +984,9 @@ const channel =
         if (i === 1) medal = '🥈';
         if (i === 2) medal = '🥉';
 
-        description +=
-            description +=
+description +=
     `${medal} ${displayName}\n` +
     `✅ ${stats.verified} Verified | ⏳ ${stats.pending} Pending | ❌ ${stats.left} Lost\n\n`;
-
-    }
 
     let thumbnail = null;
 
