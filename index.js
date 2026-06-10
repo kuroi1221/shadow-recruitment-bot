@@ -988,8 +988,9 @@ description +=
     `${medal} ${displayName}\n` +
     `✅ ${stats.verified} Verified | ⏳ ${stats.pending} Pending | ❌ ${stats.left} Lost\n\n`;
 
-    let thumbnail = null;
+}
 
+let thumbnail = null;
     if (sorted.length > 0) {
 
         const topMember =
