@@ -472,11 +472,20 @@ if (
         }
 
         const sorted =
-            Object.entries(data.recruiters)
-            .sort((a, b) =>
-                b[1].verified -
-                a[1].verified
-            );
+    Object.entries(data.recruiters)
+    .sort((a, b) => {
+
+        const aTotal =
+            a[1].verified +
+            a[1].pending;
+
+        const bTotal =
+            b[1].verified +
+            b[1].pending;
+
+        return bTotal - aTotal;
+
+    });
 
         const rank =
             sorted.findIndex(
