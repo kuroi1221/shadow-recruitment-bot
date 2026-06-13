@@ -1,6 +1,7 @@
 require('dotenv').config();
 
-const fs = require('fs');
+const db = new Database("/data/database.db");
+db.pragma("journal_mode = WAL");
 
 const {
     Client,
@@ -35,78 +36,82 @@ const THREE_DAYS =
 const inviteCache = new Map();
 
 // =====================================
-// DATABASE
-// =====================================
 
-let data = {
-    recruiters: {},
-    pending: {},
-    verified: {},
-    left: {}
-};
-
-if (fs.existsSync('./recruits.json')) {
-
-    data = JSON.parse(
-        fs.readFileSync('./recruits.json')
-    );
-
-}
-
-// =====================================
-// LEADERBOARD DATA
-// =====================================
-
-let leaderboardData = {};
-
-if (fs.existsSync('./leaderboard.json')) {
-
-    leaderboardData = JSON.parse(
-        fs.readFileSync('./leaderboard.json')
-    );
-
-}
-
-// =====================================
-// SETTINGS
-// =====================================
-
-let settings = {};
-
-if (fs.existsSync('./settings.json')) {
-
-    settings = JSON.parse(
-        fs.readFileSync('./settings.json')
-    );
-
-}
 
 // =====================================
 // SAVE DATABASE
 // =====================================
 
-function saveData() {
+function getRecruiter(userId) {
 
-    fs.writeFileSync(
-        './recruits.json',
-        JSON.stringify(data, null, 2)
+    let recruiter =
+        db.prepare(`
+            SELECT * FROM recruiters
+            WHERE userId = ?
+        `).get(userId);
+
+    if (!recruiter) {
+
+        db.prepare(`
+            INSERT INTO recruiters
+            (userId, verified, pending, lost)
+            VALUES (?, 0, 0, 0)
+        `).run(userId);
+
+        recruiter =
+            db.prepare(`
+                SELECT * FROM recruiters
+                WHERE userId = ?
+            `).get(userId);
+    }
+
+    return recruiter;
+}
+
+function updateRecruiter(userId, verified, pending, lost) {
+
+
+    db.prepare(`
+        UPDATE recruiters
+        SET verified = ?,
+            pending = ?,
+            lost = ?
+        WHERE userId = ?
+    `).run(
+        verified,
+        pending,
+        lost,
+        userId
     );
+}
+
+function setSetting(key, value) {
+
+    db.prepare(`
+        INSERT OR REPLACE INTO settings
+        (key, value)
+        VALUES (?, ?)
+    `).run(key, value);
 
 }
 
-function saveSettings() {
+function getSetting(key) {
 
-    fs.writeFileSync(
-        './settings.json',
-        JSON.stringify(settings, null, 2)
-    );
+    const row =
+        db.prepare(`
+            SELECT value FROM settings
+            WHERE key = ?
+        `).get(key);
+
+    return row ? row.value : null;
 
 }
+
 // =====================================
 // READY
 // =====================================
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
 
     console.log(
         `Logged in as ${client.user.tag}`
@@ -213,34 +218,30 @@ client.on('guildMemberAdd', async member => {
     }
 
     const recruiterId =
-        usedInvite.inviter.id;
+    usedInvite.inviter.id;
 
-    // Create recruiter
-    if (!data.recruiters[recruiterId]) {
+// get recruiter from DB
+let recruiter =
+    getRecruiter(recruiterId);
 
-        data.recruiters[recruiterId] = {
+// increase pending count
+updateRecruiter(
+    recruiterId,
+    recruiter.verified,
+    recruiter.pending + 1,
+    recruiter.lost
+);
 
-            verified: 0,
-            pending: 0,
-            left: 0
-
-        };
-
-    }
-
-    // Pending recruit
-    data.recruiters[recruiterId]
-        .pending++;
-
-    // Save pending recruit
-    data.pending[member.user.id] = {
-
-        recruiterId: recruiterId,
-        joinedAt: Date.now()
-
-    };
-
-    saveData();
+// save pending recruit in database
+db.prepare(`
+    INSERT OR REPLACE INTO pending_recruits
+    (memberId, recruiterId, joinedAt)
+    VALUES (?, ?, ?)
+`).run(
+    member.user.id,
+    recruiterId,
+    Date.now()
+);
 
 await updateLeaderboard(guild);
 
@@ -258,10 +259,13 @@ async function verifyRecruits() {
 
     const now = Date.now();
 
-    for (const userId in data.pending) {
+    // get all pending recruits
+    const pendingList =
+        db.prepare(`
+            SELECT * FROM pending_recruits
+        `).all();
 
-        const pendingData =
-            data.pending[userId];
+    for (const pendingData of pendingList) {
 
         if (
             now - pendingData.joinedAt
@@ -274,58 +278,70 @@ async function verifyRecruits() {
             if (!guild) continue;
 
             const member =
-                await guild.members.fetch(userId)
-                .catch(() => null);
+                await guild.members
+                    .fetch(
+                        pendingData.memberId
+                    )
+                    .catch(() => null);
 
-            // User left already
+            // user left already
             if (!member) {
 
-                delete data.pending[userId];
-
-                saveData();
+                db.prepare(`
+                    DELETE FROM pending_recruits
+                    WHERE memberId = ?
+                `).run(
+                    pendingData.memberId
+                );
 
                 continue;
-
             }
 
             const recruiterId =
                 pendingData.recruiterId;
 
-            // Verified +1
-            data.recruiters[
-                recruiterId
-            ].verified++;
-
-            // Pending -1
-            data.recruiters[
-                recruiterId
-            ].pending--;
-
-            if (
-                data.recruiters[
+            let recruiter =
+                getRecruiter(
                     recruiterId
-                ].pending < 0
-            ) {
+                );
 
-                data.recruiters[
-                    recruiterId
-                ].pending = 0;
+            let newPending =
+                recruiter.pending - 1;
 
-            }
+            if (newPending < 0)
+                newPending = 0;
 
-            // Save verified recruit
-            data.verified[userId] =
-                recruiterId;
+            // move pending → verified
+            updateRecruiter(
+                recruiterId,
+                recruiter.verified + 1,
+                newPending,
+                recruiter.lost
+            );
+	// save verified recruit
+		db.prepare(`
+ 		   INSERT OR REPLACE INTO verified_recruits
+   		 (memberId, recruiterId, verifiedAt)
+ 		   VALUES (?, ?, ?)
+			`).run(
+  		  pendingData.memberId,
+		    recruiterId,
+		    Date.now()
+		);
+            // remove pending recruit
+            db.prepare(`
+                DELETE FROM pending_recruits
+                WHERE memberId = ?
+            `).run(
+                pendingData.memberId
+            );
 
-            // Remove pending
-            delete data.pending[userId];
+            console.log(
+                `${pendingData.memberId} verified after 3 days`
+            );
 
-saveData();
-
-await updateLeaderboard(guild);
-
-console.log(
-    `${userId} verified after 3 days`
+            await updateLeaderboard(
+                guild
             );
 
         }
@@ -341,72 +357,84 @@ console.log(
 client.on('guildMemberRemove',
 async member => {
 
-    // VERIFIED leaves
-    const verifiedRecruiter =
-        data.verified[member.user.id];
+	    // check verified recruit
+    const verified =
+        db.prepare(`
+            SELECT * FROM verified_recruits
+            WHERE memberId = ?
+        `).get(member.user.id);
 
-    if (verifiedRecruiter) {
+    if (verified) {
 
-        data.recruiters[
-            verifiedRecruiter
-        ].verified--;
+        let recruiter =
+            getRecruiter(
+                verified.recruiterId
+            );
 
-        data.recruiters[
-            verifiedRecruiter
-        ].left++;
+        let newVerified =
+            recruiter.verified - 1;
 
-        if (
-            data.recruiters[
-                verifiedRecruiter
-            ].verified < 0
-        ) {
+        if (newVerified < 0)
+            newVerified = 0;
 
-            data.recruiters[
-                verifiedRecruiter
-            ].verified = 0;
+        updateRecruiter(
+            verified.recruiterId,
+            newVerified,
+            recruiter.pending,
+            recruiter.lost + 1
+        );
 
-        }
+        // remove verified recruit
+        db.prepare(`
+            DELETE FROM verified_recruits
+            WHERE memberId = ?
+        `).run(member.user.id);
 
-delete data.verified[
-    member.user.id
-];
+        await updateLeaderboard(
+            member.guild
+        );
 
-saveData();
+        return;
+    }
 
-await updateLeaderboard(member.guild);
+    // check pending recruit
+    const pending =
+        db.prepare(`
+            SELECT * FROM pending_recruits
+            WHERE memberId = ?
+        `).get(member.user.id);
 
-}
+    if (pending) {
 
-    // PENDING leaves
-    const pendingRecruiter =
-        data.pending[member.user.id];
+        let recruiter =
+            getRecruiter(
+                pending.recruiterId
+            );
 
-    if (pendingRecruiter) {
+        let newPending =
+            recruiter.pending - 1;
 
-        data.recruiters[
-            pendingRecruiter.recruiterId
-        ].pending--;
+        if (newPending < 0)
+            newPending = 0;
 
-        if (
-            data.recruiters[
-                pendingRecruiter.recruiterId
-            ].pending < 0
-        ) {
+        updateRecruiter(
+            pending.recruiterId,
+            recruiter.verified,
+            newPending,
+            recruiter.lost
+        );
 
-            data.recruiters[
-                pendingRecruiter.recruiterId
-            ].pending = 0;
+        // delete pending recruit
+        db.prepare(`
+            DELETE FROM pending_recruits
+            WHERE memberId = ?
+        `).run(member.user.id);
 
-        }
+        await updateLeaderboard(
+            member.guild
+        );
 
-        delete data.pending[
-            member.user.id
-        ];
-
-saveData();
-
-await updateLeaderboard(member.guild);
-
+        return;
     }
 
 });
@@ -429,16 +457,23 @@ if (
     '!Ssetleaderboard'
 ) {
 
-    settings[
-        message.guild.id
-    ] = {
+    if (
+    message.content ===
+    '!Ssetleaderboard'
+) {
 
-        leaderboardChannel:
-            message.channel.id
+    setSetting(
+        `leaderboard_${message.guild.id}`,
+        message.channel.id
+    );
 
-    };
+    return message.reply(
 
-    saveSettings();
+        `✅ Leaderboard channel set to <#${message.channel.id}>`
+
+    );
+
+}
 
     return message.reply(
 
@@ -456,132 +491,128 @@ if (
         message.content.startsWith('!Sprofile')
     ) {
 
-        let target =
-            message.mentions.members.first()
-            || message.member;
+    let target =
+        message.mentions.members.first()
+        || message.member;
 
-        const recruiterData =
-            data.recruiters[target.id];
+    // get recruiter from DB
+    const recruiterData =
+        db.prepare(`
+            SELECT * FROM recruiters
+            WHERE userId = ?
+        `).get(target.id);
 
-        if (!recruiterData) {
+    if (!recruiterData) {
 
-            return message.reply(
-                'No recruitment data found.'
-            );
-
-        }
-
-        const sorted =
-    Object.entries(data.recruiters)
-    .sort((a, b) => {
-
-        const aTotal =
-            a[1].verified +
-            a[1].pending;
-
-        const bTotal =
-            b[1].verified +
-            b[1].pending;
-
-        return bTotal - aTotal;
-
-    });
-
-        const rank =
-            sorted.findIndex(
-                user =>
-                    user[0] === target.id
-            ) + 1;
-
-        const total =
-            recruiterData.verified +
-            recruiterData.left;
-
-        let successRate = '100%';
-
-        if (total > 0) {
-
-            successRate =
-                Math.round(
-                    recruiterData.verified /
-                    total * 100
-                ) + '%';
-
-        }
-
-        const embed =
-            new EmbedBuilder()
-
-            .setColor(0x5865F2)
-
-            .setTitle(
-                '🏆 Recruit Profile'
-            )
-
-            .setThumbnail(
-                target.user.displayAvatarURL({
-                    dynamic: true
-                })
-            )
-
-            .addFields(
-
-                {
-                    name: '👤 Recruiter',
-                    value: target.displayName,
-                    inline: false
-                },
-
-                {
-                    name: '✅ Verified',
-                    value: String(
-                        recruiterData.verified
-                    ),
-                    inline: true
-                },
-
-                {
-                    name: '⏳ Pending',
-                    value: String(
-                        recruiterData.pending
-                    ),
-                    inline: true
-                },
-
-                {
-                    name: '❌ Lost',
-                    value: String(
-                        recruiterData.left
-                    ),
-                    inline: true
-                },
-
-                {
-                    name: '🥇 Rank',
-                    value: `#${rank}`,
-                    inline: true
-                },
-
-                {
-                    name: '⭐ Success Rate',
-                    value: successRate,
-                    inline: true
-                }
-
-            )
-
-            .setFooter({
-                text:
-                    'Guild Recruitment Event'
-            })
-
-            .setTimestamp();
-
-        message.channel.send({
-            embeds: [embed]
-        });
+        return message.reply(
+            'No recruitment data found.'
+        );
 
     }
+
+    // get all recruiters for ranking
+    const sorted =
+        db.prepare(`
+            SELECT * FROM recruiters
+            ORDER BY
+            (verified + pending) DESC
+        `).all();
+
+    const rank =
+        sorted.findIndex(
+            user =>
+                user.userId === target.id
+        ) + 1;
+
+    const total =
+        recruiterData.verified +
+        recruiterData.lost;
+
+    let successRate = '100%';
+
+    if (total > 0) {
+
+        successRate =
+            Math.round(
+                recruiterData.verified /
+                total * 100
+            ) + '%';
+
+    }
+
+    const embed =
+        new EmbedBuilder()
+
+        .setColor(0x5865F2)
+
+        .setTitle(
+            '🏆 Recruit Profile'
+        )
+
+        .setThumbnail(
+            target.user.displayAvatarURL({
+                dynamic: true
+            })
+        )
+
+        .addFields(
+
+            {
+                name: '👤 Recruiter',
+                value: target.displayName,
+                inline: false
+            },
+
+            {
+                name: '✅ Verified',
+                value: String(
+                    recruiterData.verified
+                ),
+                inline: true
+            },
+
+            {
+                name: '⏳ Pending',
+                value: String(
+                    recruiterData.pending
+                ),
+                inline: true
+            },
+
+            {
+                name: '❌ Lost',
+                value: String(
+                    recruiterData.lost
+                ),
+                inline: true
+            },
+
+            {
+                name: '🥇 Rank',
+                value: `#${rank}`,
+                inline: true
+            },
+
+            {
+                name: '⭐ Success Rate',
+                value: successRate,
+                inline: true
+            }
+
+        )
+
+        .setFooter({
+            text:
+                'Guild Recruitment Event'
+        })
+
+        .setTimestamp();
+
+    message.channel.send({
+        embeds: [embed]
+    });
+
+}
 
     // =====================================
     // LEADERBOARD
@@ -602,266 +633,274 @@ if (
 
     }
 
-    // =====================================
-    // PENDING RECRUITS
-    // =====================================
+  // =====================================
+// PENDING RECRUITS
+// =====================================
 
-    if (
-        message.content ===
-        '!Spending'
-    ) {
+if (
+    message.content ===
+    '!Spending'
+) {
 
-        let description = '';
+    let description = '';
 
-        for (const userId in data.pending) {
+    // get all pending recruits from DB
+    const pendingList =
+        db.prepare(`
+            SELECT * FROM pending_recruits
+        `).all();
 
-            const pendingData =
-                data.pending[userId];
+    for (const pendingData of pendingList) {
 
-            const member =
-                await message.guild.members.fetch(userId)
-                .catch(() => null);
+        const member =
+            await message.guild.members.fetch(
+                pendingData.memberId
+            ).catch(() => null);
 
-            const recruiter =
-                await message.guild.members.fetch(
-                    pendingData.recruiterId
-                ).catch(() => null);
+        const recruiter =
+            await message.guild.members.fetch(
+                pendingData.recruiterId
+            ).catch(() => null);
 
-            if (!member || !recruiter)
-                continue;
+        if (!member || !recruiter)
+            continue;
 
-            description +=
-                `👤 ${member.displayName}\n` +
-                `📨 Invited by ${recruiter.displayName}\n\n`;
-
-        }
-
-        const embed =
-            new EmbedBuilder()
-
-            .setColor(0xF1C40F)
-
-            .setTitle(
-                '⏳ Pending Recruits'
-            )
-
-            .setDescription(
-                description ||
-                'No pending recruits.'
-            )
-
-            .setTimestamp();
-
-        message.channel.send({
-            embeds: [embed]
-        });
+        description +=
+            `👤 ${member.displayName}\n` +
+            `📨 Invited by ${recruiter.displayName}\n\n`;
 
     }
 
-    // =====================================
-    // VERIFY LIST
-    // =====================================
+    const embed =
+        new EmbedBuilder()
 
-    if (
-        message.content ===
-        '!Sverifylist'
-    ) {
+        .setColor(0xF1C40F)
 
-        let description = '';
+        .setTitle(
+            '⏳ Pending Recruits'
+        )
 
-        const now = Date.now();
+        .setDescription(
+            description ||
+            'No pending recruits.'
+        )
 
-        for (const userId in data.pending) {
+        .setTimestamp();
 
-            const pendingData =
-                data.pending[userId];
+    message.channel.send({
+        embeds: [embed]
+    });
 
-            const remaining =
-                THREE_DAYS -
-                (now - pendingData.joinedAt);
+}
 
-            const hours =
-                Math.floor(
-                    remaining /
-                    (1000 * 60 * 60)
-                );
 
-            const member =
-                await message.guild.members.fetch(userId)
-                .catch(() => null);
+// =====================================
+// VERIFY LIST
+// =====================================
 
-            if (!member) continue;
+if (
+    message.content ===
+    '!Sverifylist'
+) {
 
-            description +=
-                `👤 ${member.displayName}\n` +
-                `⏰ ${hours}h remaining\n\n`;
+    let description = '';
 
-        }
+    const now = Date.now();
 
-        const embed =
-            new EmbedBuilder()
+    const pendingList =
+        db.prepare(`
+            SELECT * FROM pending_recruits
+        `).all();
 
-            .setColor(0x2ECC71)
+    for (const pendingData of pendingList) {
 
-            .setTitle(
-                '✅ Verification Queue'
-            )
+        const remaining =
+            THREE_DAYS -
+            (now - pendingData.joinedAt);
 
-            .setDescription(
-                description ||
-                'No recruits waiting.'
-            )
+        const hours =
+            Math.floor(
+                remaining /
+                (1000 * 60 * 60)
+            );
 
-            .setTimestamp();
+        const member =
+            await message.guild.members.fetch(
+                pendingData.memberId
+            ).catch(() => null);
 
-        message.channel.send({
-            embeds: [embed]
-        });
+        if (!member) continue;
 
-    }
-
-    // =====================================
-    // RECRUIT STATS
-    // =====================================
-
-    if (
-        message.content ===
-        '!Srecruitstats'
-    ) {
-
-        const totalRecruiters =
-            Object.keys(data.recruiters)
-            .length;
-
-        let totalVerified = 0;
-        let totalPending = 0;
-        let totalLeft = 0;
-
-        for (const recruiterId in data.recruiters) {
-
-            totalVerified +=
-                data.recruiters[
-                    recruiterId
-                ].verified;
-
-            totalPending +=
-                data.recruiters[
-                    recruiterId
-                ].pending;
-
-            totalLeft +=
-                data.recruiters[
-                    recruiterId
-                ].left;
-
-        }
-
-        const embed =
-            new EmbedBuilder()
-
-            .setColor(0x9B59B6)
-
-            .setTitle(
-                '📊 Recruitment Statistics'
-            )
-
-            .addFields(
-
-                {
-                    name: '👥 Recruiters',
-                    value: String(
-                        totalRecruiters
-                    ),
-                    inline: true
-                },
-
-                {
-                    name: '✅ Verified',
-                    value: String(
-                        totalVerified
-                    ),
-                    inline: true
-                },
-
-                {
-                    name: '⏳ Pending',
-                    value: String(
-                        totalPending
-                    ),
-                    inline: true
-                },
-
-                {
-                    name: '❌ Lost',
-                    value: String(
-                        totalLeft
-                    ),
-                    inline: true
-                }
-
-            )
-
-            .setTimestamp();
-
-        message.channel.send({
-            embeds: [embed]
-        });
+        description +=
+            `👤 ${member.displayName}\n` +
+            `⏰ ${hours}h remaining\n\n`;
 
     }
 
-    // =====================================
-    // MY INVITES
-    // =====================================
+    const embed =
+        new EmbedBuilder()
 
-    if (
-        message.content ===
-        '!Smyinvites'
-    ) {
+        .setColor(0x2ECC71)
 
-        let verifiedList = '';
+        .setTitle(
+            '✅ Verification Queue'
+        )
 
-        for (const userId in data.verified) {
+        .setDescription(
+            description ||
+            'No recruits waiting.'
+        )
 
-            const recruiterId =
-                data.verified[userId];
+        .setTimestamp();
 
-            if (
-                recruiterId !==
-                message.member.id
-            ) continue;
+    message.channel.send({
+        embeds: [embed]
+    });
 
-            const member =
-                await message.guild.members.fetch(userId)
-                .catch(() => null);
+}
 
-            if (!member) continue;
+// =====================================
+// RECRUIT STATS
+// =====================================
 
-            verifiedList +=
-                `👤 ${member.displayName}\n`;
+if (
+    message.content ===
+    '!Srecruitstats'
+) {
 
-        }
+    // get all recruiters
+    const recruiters =
+        db.prepare(`
+            SELECT * FROM recruiters
+        `).all();
 
-        const embed =
-            new EmbedBuilder()
+    const totalRecruiters =
+        recruiters.length;
 
-            .setColor(0x3498DB)
+    let totalVerified = 0;
+    let totalPending = 0;
+    let totalLost = 0;
 
-            .setTitle(
-                `📨 ${message.member.displayName}'s Recruits`
-            )
+    for (const recruiter of recruiters) {
 
-            .setDescription(
-                verifiedList ||
-                'No verified recruits.'
-            )
+        totalVerified +=
+            recruiter.verified;
 
-            .setTimestamp();
+        totalPending +=
+            recruiter.pending;
 
-        message.channel.send({
-            embeds: [embed]
-        });
+        totalLost +=
+            recruiter.lost;
 
     }
+
+    const embed =
+        new EmbedBuilder()
+
+        .setColor(0x9B59B6)
+
+        .setTitle(
+            '📊 Recruitment Statistics'
+        )
+
+        .addFields(
+
+            {
+                name: '👥 Recruiters',
+                value: String(
+                    totalRecruiters
+                ),
+                inline: true
+            },
+
+            {
+                name: '✅ Verified',
+                value: String(
+                    totalVerified
+                ),
+                inline: true
+            },
+
+            {
+                name: '⏳ Pending',
+                value: String(
+                    totalPending
+                ),
+                inline: true
+            },
+
+            {
+                name: '❌ Lost',
+                value: String(
+                    totalLost
+                ),
+                inline: true
+            }
+
+        )
+
+        .setTimestamp();
+
+    message.channel.send({
+        embeds: [embed]
+    });
+
+}
+
+// =====================================
+// MY INVITES
+// =====================================
+
+if (
+    message.content ===
+    '!Smyinvites'
+) {
+
+    let verifiedList = '';
+
+    const verifiedRecruits =
+        db.prepare(`
+            SELECT * FROM verified_recruits
+            WHERE recruiterId = ?
+        `).all(
+            message.member.id
+        );
+
+    for (const recruit of verifiedRecruits) {
+
+        const member =
+            await message.guild.members.fetch(
+                recruit.memberId
+            ).catch(() => null);
+
+        if (!member) continue;
+
+        verifiedList +=
+            `👤 ${member.displayName}\n`;
+
+    }
+
+    const embed =
+        new EmbedBuilder()
+
+        .setColor(0x3498DB)
+
+        .setTitle(
+            `📨 ${message.member.displayName}'s Recruits`
+        )
+
+        .setDescription(
+            verifiedList ||
+            'No verified recruits.'
+        )
+
+        .setTimestamp();
+
+    message.channel.send({
+        embeds: [embed]
+    });
+
+}
 
     // =====================================
     // HELP
@@ -926,8 +965,9 @@ Show command list`
 async function updateLeaderboard(guild) {
 
 const channelId =
-    settings[guild.id]
-        ?.leaderboardChannel;
+    getSetting(
+        `leaderboard_${guild.id}`
+    );
 
 if (!channelId) {
 
@@ -947,28 +987,22 @@ const channel =
     if (!channel) return;
 
 const sorted =
-    Object.entries(data.recruiters)
-    .sort((a, b) => {
-
-        const aTotal =
-            a[1].verified +
-            a[1].pending;
-
-        const bTotal =
-            b[1].verified +
-            b[1].pending;
-
-        return bTotal - aTotal;
-
-    });
+    db.prepare(`
+        SELECT * FROM recruiters
+        ORDER BY
+        (verified + pending) DESC
+    `).all();
 
 	
     let description = '';
 
-    for (let i = 0; i < sorted.length; i++) {
+for (let i = 0; i < sorted.length; i++) {
 
-        const [userId, stats] =
-            sorted[i];
+    const stats =
+        sorted[i];
+
+    const userId =
+        stats.userId;
 
         const member =
             await guild.members.fetch(userId)
@@ -987,19 +1021,16 @@ const sorted =
 
 description +=
     `${medal} ${displayName}\n` +
-    `✅ ${stats.verified} Verified | ⏳ ${stats.pending} Pending | ❌ ${stats.left} Lost\n\n`;
+    `✅ ${stats.verified} Verified | ⏳ ${stats.pending} Pending | ❌ ${stats.lost} Lost\n\n`;
 
 }
-
-	console.log("LEADERBOARD DESCRIPTION:");
-	console.log(description);
 
 let thumbnail = null;
     if (sorted.length > 0) {
 
         const topMember =
             await guild.members.fetch(
-                sorted[0][0]
+                sorted[0].userId
             ).catch(() => null);
 
         if (topMember) {
@@ -1044,44 +1075,43 @@ let thumbnail = null;
     }
 
     // Edit old message
-    if (leaderboardData.messageId) {
+    const oldMessageId =
+    getSetting(
+        `leaderboard_message_${guild.id}`
+    );
 
-        try {
+if (oldMessageId) {
 
-            const oldMessage =
-                await channel.messages.fetch(
-                    leaderboardData.messageId
-                );
+    try {
 
-            await oldMessage.edit({
-                embeds: [embed]
-            });
+        const oldMessage =
+            await channel.messages.fetch(
+                oldMessageId
+            );
 
-            return;
-
-        } catch {}
-
-    }
-
-    // Create new leaderboard
-    const sentMessage =
-        await channel.send({
+        await oldMessage.edit({
             embeds: [embed]
         });
 
-    leaderboardData.messageId =
-        sentMessage.id;
+        return;
 
-    fs.writeFileSync(
-        './leaderboard.json',
-        JSON.stringify(
-            leaderboardData,
-            null,
-            2
-        )
-    );
+    } catch {}
 
 }
+
+    // Create new leaderboard
+  const sentMessage =
+    await channel.send({
+        embeds: [embed]
+    });
+
+setSetting(
+    `leaderboard_message_${guild.id}`,
+    sentMessage.id
+);
+
+}
+
 
 // =====================================
 // AUTO LEADERBOARD UPDATE
