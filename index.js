@@ -994,8 +994,6 @@ description +=
 	console.log("LEADERBOARD DESCRIPTION:");
 	console.log(description);
 
-const embed = new EmbedBuilder()
-
 let thumbnail = null;
     if (sorted.length > 0) {
 
