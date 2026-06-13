@@ -962,10 +962,6 @@ const sorted =
 
     });
 
-	console.log("LEADERBOARD DESCRIPTION:");
-	console.log(description);
-
-const embed = new EmbedBuilder()
 	
     let description = '';
 
@@ -994,6 +990,11 @@ description +=
     `✅ ${stats.verified} Verified | ⏳ ${stats.pending} Pending | ❌ ${stats.left} Lost\n\n`;
 
 }
+
+	console.log("LEADERBOARD DESCRIPTION:");
+	console.log(description);
+
+const embed = new EmbedBuilder()
 
 let thumbnail = null;
     if (sorted.length > 0) {
