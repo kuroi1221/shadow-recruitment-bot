@@ -1,7 +1,6 @@
 require('dotenv').config();
 
-const db = new Database("/data/database.db");
-db.pragma("journal_mode = WAL");
+const db = require('./database');
 
 const {
     Client,
