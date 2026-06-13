@@ -962,6 +962,11 @@ const sorted =
 
     });
 
+	console.log("LEADERBOARD DESCRIPTION:");
+	console.log(description);
+
+const embed = new EmbedBuilder()
+	
     let description = '';
 
     for (let i = 0; i < sorted.length; i++) {
